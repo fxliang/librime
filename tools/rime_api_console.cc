@@ -97,7 +97,7 @@ void print(RimeSessionId session_id) {
 
 bool execute_special_command(const char* line, RimeSessionId session_id) {
   RimeApi* rime = rime_get_api();
-  if (!strcmp(line, "print schema list")) {
+  if (!strcmp(line, "print schema list") || !strcmp(line, "ls schema")) {
     RimeSchemaList list;
     if (rime->get_schema_list(&list)) {
       printf("schema list:\n");

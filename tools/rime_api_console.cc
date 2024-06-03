@@ -8,7 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <rime_api.h>
+#include <map>
+#include <vector>
 #include "codepage.h"
+
+using SessionsMap = std::map<int, RimeSessionId>;
 
 void print_status(RimeStatus* status) {
   printf("schema: %s / %s\n", status->schema_id, status->schema_name);
@@ -95,9 +99,45 @@ void print(RimeSessionId session_id) {
   }
 }
 
-bool execute_special_command(const char* line, RimeSessionId session_id) {
+bool execute_special_command(const char* line,
+                             RimeSessionId& session_id,
+                             SessionsMap& session_maps) {
   RimeApi* rime = rime_get_api();
-  if (!strcmp(line, "print schema list") || !strcmp(line, "ls schema")) {
+  auto print_sessions = [rime, &session_id, &session_maps]() {
+    printf("current sessions list:\n");
+    for (const auto& p : session_maps) {
+      char schema_id[256] = {0};
+      rime->get_current_schema(p.second, schema_id, sizeof(schema_id));
+      char mk = (p.second == session_id) ? '>' : ' ';
+      printf("%c %d. session_id: %lx, schema_id: %s\n", mk, p.first, p.second,
+             schema_id);
+    }
+  };
+  auto print_current_schema = [rime, &session_id]() {
+    char current[100] = {0};
+    if (rime->get_current_schema(session_id, current, sizeof(current))) {
+      printf("current schema: [%s]\n", current);
+    }
+  };
+
+  if (!strcmp(line, "ls sessions")) {
+    print_sessions();
+    return true;
+  }
+  if (!strcmp(line, "add session")) {
+    RimeSessionId id = rime->create_session();
+    if (!id) {
+      fprintf(stderr, "Error creating new rime session.\n");
+      return true;
+    }
+    session_maps[session_maps.rbegin()->first + 1] = id;
+    session_id = id;
+    print_sessions();
+    print_current_schema();
+    return true;
+  }
+
+  if (!strcmp(line, "print schema list") || !strcmp(line, "ls schemas")) {
     RimeSchemaList list;
     if (rime->get_schema_list(&list)) {
       printf("schema list:\n");
@@ -107,10 +147,7 @@ bool execute_special_command(const char* line, RimeSessionId session_id) {
       }
       rime->free_schema_list(&list);
     }
-    char current[100] = {0};
-    if (rime->get_current_schema(session_id, current, sizeof(current))) {
-      printf("current schema: [%s]\n", current);
-    }
+    print_current_schema();
     return true;
   }
   const char* kSelectSchemaCommand = "select schema ";
@@ -165,6 +202,42 @@ bool execute_special_command(const char* line, RimeSessionId session_id) {
   if (!strcmp(line, "synchronize")) {
     return rime->sync_user_data();
   }
+
+  const char* kSelectSession = "select session";
+  command_length = strlen(kSelectSession);
+  if (!strncmp(line, kSelectSession, command_length)) {
+    int index = atoi(line + command_length);
+    if (session_maps.find(index) != session_maps.end()) {
+      session_id = session_maps[index];
+      print_sessions();
+      print_current_schema();
+      return true;
+    }
+  }
+  const char* kKillSession = "kill session";
+  command_length = strlen(kKillSession);
+  if (!strncmp(line, kKillSession, command_length)) {
+    int index = atoi(line + command_length);
+    if (index > 0) {
+      auto p = session_maps.find(index);
+      if (p != session_maps.end() && session_maps.size() > 1) {
+        rime->destroy_session(session_maps[index]);
+        session_maps.erase(index);
+        ++p;
+        session_id = p->second;
+        print_sessions();
+        print_current_schema();
+        return true;
+      } else {
+        printf("don't kill the last session\n");
+        print_sessions();
+        return true;
+      }
+    } else {
+      printf("invalid session index, please recheck!\n");
+      return true;
+    }
+  }
   return false;
 }
 
@@ -212,6 +285,9 @@ reload:
     return 1;
   }
 
+  SessionsMap session_maps;
+  session_maps[1] = session_id;
+
   const int kMaxLength = 99;
   char line[kMaxLength + 1] = {0};
   while (fgets(line, kMaxLength, stdin) != NULL) {
@@ -224,11 +300,13 @@ reload:
     if (!strcmp(line, "exit"))
       break;
     else if (!strcmp(line, "reload")) {
-      rime->destroy_session(session_id);
+      for (const auto& p : session_maps) {
+        rime->destroy_session(p.second);
+      }
       rime->finalize();
       goto reload;
     }
-    if (execute_special_command(line, session_id))
+    if (execute_special_command(line, session_id, session_maps))
       continue;
     if (rime->simulate_key_sequence(session_id, line)) {
       print(session_id);
@@ -237,7 +315,9 @@ reload:
     }
   }
 
-  rime->destroy_session(session_id);
+  for (const auto& p : session_maps) {
+    rime->destroy_session(p.second);
+  }
 
   rime->finalize();
 

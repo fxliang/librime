@@ -30,7 +30,7 @@ jobs:
     needs: lint
     uses: ./.github/workflows/macos-build.yml
     with:
-      rime_plugins: hchunhui/librime-lua lotem/librime-octagram rime/librime-predict
+      rime_plugins: hchunhui/librime-lua lotem/librime-octagram fxliang/librime-predict-leveldb
 
   windows:
     needs: lint

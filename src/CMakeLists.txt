@@ -171,6 +171,16 @@ else()
     ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
   install(TARGETS rime-static DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR})
 endif()
+set(rime_version_sources
+  ${CMAKE_CURRENT_SOURCE_DIR}/rime_api.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/rime/signature.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/rime/dict/db.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/rime/config/build_info_plugin.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/rime/lever/deployment_tasks.cc)
+foreach(rime_version_source IN LISTS rime_version_sources)
+  set_property(SOURCE ${rime_version_source}
+    APPEND PROPERTY COMPILE_DEFINITIONS RIME_VERSION=\"${rime_version}\")
+endforeach()
 if(DEFINED RIME_SETUP_EXTRA_MODULES)
   set_property(SOURCE rime/setup.cc
     PROPERTY COMPILE_DEFINITIONS

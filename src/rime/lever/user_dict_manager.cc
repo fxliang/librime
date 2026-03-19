@@ -95,6 +95,51 @@ bool UserDictManager::Restore(const path& snapshot_file) {
     dest->Close();
   }
   BOOST_SCOPE_EXIT_END
+
+  // ========================================================================
+  // C++17: Try using custom merge callback
+  // ========================================================================
+
+  string db_type;
+  if (temp->MetaFetch("/db_type", &db_type)) {
+    if (auto* callback =
+            UserDbMergeCallbackRegistry::instance().Find(db_type)) {
+      LOG(INFO) << "Using custom merge callback for db type: " << db_type;
+
+      // C++17: Exception protection + std::optional return value handling
+      try {
+        auto result = callback->Merge(dest.get(), temp.get());
+
+        // Handle three states of std::optional
+        if (result.has_value()) {
+          if (result.value()) {
+            LOG(INFO) << "Custom merge completed successfully for: " << db_name;
+            return true;
+          } else {
+            LOG(WARNING) << "Custom merge returned false for: " << db_name
+                         << ", falling back to standard merge";
+          }
+        } else {
+          // std::nullopt means callback declined, use standard merge
+          LOG(INFO) << "Custom merge callback declined for: " << db_name;
+        }
+
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "Custom merge callback threw exception: " << e.what()
+                   << ", falling back to standard merge";
+        // Continue to standard merge
+      } catch (...) {
+        LOG(ERROR) << "Custom merge callback threw unknown exception"
+                   << ", falling back to standard merge";
+        // Continue to standard merge
+      }
+    }
+  }
+
+  // ========================================================================
+  // Standard merge logic (unchanged)
+  // ========================================================================
+
   LOG(INFO) << "merging '" << snapshot_file << "' from "
             << UserDbHelper(temp).GetUserId() << " into userdb '" << db_name
             << "'...";

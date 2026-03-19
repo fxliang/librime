@@ -263,4 +263,82 @@ bool UserDbImporter::Put(const string& key, const string& value) {
   return db_->Update(key, o.Pack());
 }
 
+// ============================================================================
+// UserDbMergeCallbackRegistry Implementation
+// ============================================================================
+
+UserDbMergeCallbackRegistry& UserDbMergeCallbackRegistry::instance() {
+  // C++11/17: Meyers' Singleton - thread-safe, lazy initialization
+  static UserDbMergeCallbackRegistry instance;
+  return instance;
+}
+
+void UserDbMergeCallbackRegistry::Register(const string& db_type,
+                                           UserDbMergeCallback* callback) {
+  // Parameter validation (C++17 if with initializer)
+  if (db_type.empty() || !callback) {
+    LOG(WARNING) << "Invalid parameters for Register: db_type="
+                 << (db_type.empty() ? "(empty)" : db_type)
+                 << ", callback=" << (callback ? "(valid)" : "(null)");
+    return;
+  }
+
+  // C++17: std::unique_lock with std::shared_mutex
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+
+  if (callbacks_.count(db_type)) {
+    LOG(WARNING) << "Overwriting existing merge callback for: " << db_type;
+  }
+
+  callbacks_[db_type] = callback;
+  LOG(INFO) << "Registered merge callback for db type: " << db_type;
+}
+
+void UserDbMergeCallbackRegistry::Unregister(const string& db_type) {
+  if (db_type.empty()) {
+    return;
+  }
+
+  std::unique_lock<std::shared_mutex> lock(mutex_);
+
+  if (callbacks_.erase(db_type)) {
+    LOG(INFO) << "Unregistered merge callback for: " << db_type;
+  }
+}
+
+UserDbMergeCallback* UserDbMergeCallbackRegistry::Find(
+    const string& db_type) const {
+  if (db_type.empty()) {
+    return nullptr;
+  }
+
+  // C++17: std::shared_lock allows multiple concurrent readers
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+
+  auto it = callbacks_.find(db_type);
+  return (it != callbacks_.end()) ? it->second : nullptr;
+}
+
+bool UserDbMergeCallbackRegistry::HasCallback(const string& db_type) const {
+  if (db_type.empty()) {
+    return false;
+  }
+
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+  return callbacks_.count(db_type) > 0;
+}
+
+std::vector<string> UserDbMergeCallbackRegistry::GetRegisteredTypes() const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
+
+  std::vector<string> types;
+  types.reserve(callbacks_.size());
+
+  for (const auto& [type, callback] : callbacks_) {  // C++17 structured binding
+    types.push_back(type);
+  }
+
+  return types;
+}
+
 }  // namespace rime

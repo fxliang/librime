@@ -11,6 +11,10 @@
 #include <rime/component.h>
 #include <rime/dict/db.h>
 #include <rime/dict/db_utils.h>
+#include <functional>
+#include <optional>
+#include <shared_mutex>
+#include <unordered_map>
 
 namespace rime {
 
@@ -135,6 +139,65 @@ class UserDbImporter : public Sink {
 
  protected:
   Db* db_;
+};
+
+// ============================================================================
+// C++17: Custom database merge callback interface
+// Plugins can implement this to handle special database merge logic
+// ============================================================================
+
+class UserDbMergeCallback {
+ public:
+  virtual ~UserDbMergeCallback() = default;
+
+  /// Execute merge operation
+  /// @param db Target database (opened, read-write)
+  /// @param source Source database (snapshot, read-only)
+  /// @return std::nullopt if not handled, std::make_optional(true/false) for
+  /// success/failure
+  virtual std::optional<bool> Merge(Db* db, Db* source) = 0;
+};
+
+/// C++17: Merge callback registry (thread-safe singleton)
+/// Uses std::shared_mutex for read-write lock optimization
+class UserDbMergeCallbackRegistry {
+ public:
+  /// Get singleton instance (C++11 Meyers' Singleton, thread-safe)
+  static UserDbMergeCallbackRegistry& instance();
+
+  /// Register callback function
+  /// @param db_type Database type (e.g., "userdb", "table")
+  /// @param callback Callback object (lifetime managed by caller)
+  void Register(const string& db_type, UserDbMergeCallback* callback);
+
+  /// Unregister callback function
+  void Unregister(const string& db_type);
+
+  /// Find registered callback
+  /// @return nullptr if not registered
+  UserDbMergeCallback* Find(const string& db_type) const;
+
+  /// Check if callback is registered
+  bool HasCallback(const string& db_type) const;
+
+  /// C++17: Get all registered database types (for debugging)
+  std::vector<string> GetRegisteredTypes() const;
+
+ private:
+  UserDbMergeCallbackRegistry() = default;
+  ~UserDbMergeCallbackRegistry() = default;
+
+  // Disable copy and move (C++17 explicit delete)
+  UserDbMergeCallbackRegistry(const UserDbMergeCallbackRegistry&) = delete;
+  UserDbMergeCallbackRegistry& operator=(const UserDbMergeCallbackRegistry&) =
+      delete;
+  UserDbMergeCallbackRegistry(UserDbMergeCallbackRegistry&&) = delete;
+  UserDbMergeCallbackRegistry& operator=(UserDbMergeCallbackRegistry&&) =
+      delete;
+
+  // C++17: Use std::shared_mutex for read performance
+  mutable std::shared_mutex mutex_;
+  std::unordered_map<string, UserDbMergeCallback*> callbacks_;
 };
 
 }  // namespace rime

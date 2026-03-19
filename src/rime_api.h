@@ -587,6 +587,13 @@ RIME_API RIME_FLAVORED(RimeApi) * RIME_FLAVORED(rime_get_api)(void);
   static void rime_##name##_finalize() {}                           \
   RIME_REGISTER_MODULE(name)
 
+// ============================================================================
+// Feature Detection Macros (for plugin compatibility)
+// ============================================================================
+
+// UserDbMergeCallback: Custom database merge callback interface
+#define RIME_HAS_USER_DB_MERGE_CALLBACK 1
+
 #ifdef __cplusplus
 }
 #endif

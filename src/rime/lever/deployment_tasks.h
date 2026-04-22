@@ -99,7 +99,7 @@ class UserDictSync : public DeploymentTask {
   bool Run(Deployer* deployer);
 };
 
-class BackupConfigFiles : public DeploymentTask {
+class RIME_DLL BackupConfigFiles : public DeploymentTask {
  public:
   BackupConfigFiles(TaskInitializer arg = TaskInitializer()) {}
   bool Run(Deployer* deployer);

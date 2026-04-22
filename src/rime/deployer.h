@@ -65,7 +65,7 @@ class Deployer : public Messenger {
   void JoinWorkThread();
   void JoinMaintenanceThread();
 
-  path user_data_sync_dir() const;
+  RIME_DLL path user_data_sync_dir() const;
 
  private:
   std::queue<of<DeploymentTask>> pending_tasks_;

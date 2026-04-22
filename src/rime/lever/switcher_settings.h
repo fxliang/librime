@@ -21,7 +21,7 @@ struct SchemaInfo {
   string file_path;
 };
 
-class SwitcherSettings : public CustomSettings {
+class RIME_DLL SwitcherSettings : public CustomSettings {
  public:
   using SchemaList = vector<SchemaInfo>;
   // a list of schema_ids

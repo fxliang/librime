@@ -13,7 +13,7 @@ namespace rime {
 
 class Deployer;
 
-class CustomSettings {
+class RIME_DLL CustomSettings {
  public:
   CustomSettings(Deployer* deployer,
                  const string& config_id,

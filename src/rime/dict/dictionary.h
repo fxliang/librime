@@ -105,7 +105,7 @@ class Dictionary : public Class<Dictionary, const Ticket&> {
 
 class ResourceResolver;
 
-class DictionaryComponent : public Dictionary::Component {
+class RIME_DLL DictionaryComponent : public Dictionary::Component {
  public:
   DictionaryComponent();
   ~DictionaryComponent() override;

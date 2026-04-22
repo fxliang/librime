@@ -68,6 +68,8 @@ class ConfigCompiler {
   bool resolved(const string& full_path) const;
   vector<of<Dependency>> GetDependencies(const string& path);
   bool ResolveDependencies(const string& path);
+  string GetCurrentResolvingResourceId() const;
+  bool AllowDefaultNamespaceFallback(const string& source_resource_id) const;
 
  private:
   ResourceResolver* resource_resolver_;

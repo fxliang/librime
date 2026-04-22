@@ -110,7 +110,10 @@ class DictionaryComponent : public Dictionary::Component {
   DictionaryComponent();
   ~DictionaryComponent() override;
   Dictionary* Create(const Ticket& ticket) override;
-  Dictionary* Create(string dict_name, string prism_name, vector<string> packs);
+  Dictionary* Create(string dict_name,
+                     string prism_name,
+                     vector<string> packs,
+                     bool allow_default_namespace_fallback = true);
 
  private:
   map<string, weak<Prism>> prism_map_;

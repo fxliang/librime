@@ -4,6 +4,7 @@
 //
 // 2011-11-27 GONG Chen <chen.sst@gmail.com>
 //
+#include <array>
 #include <filesystem>
 #include <cfloat>
 #include <cmath>
@@ -44,12 +45,22 @@ static bool load_dict_settings_from_file(DictSettings* settings,
   return success;
 }
 
+static string qualify_with_namespace(const string& name_space,
+                                     const string& resource_id) {
+  if (name_space.empty() || path(resource_id).has_parent_path()) {
+    return resource_id;
+  }
+  return (path(name_space) / resource_id).generic_u8string();
+}
+
 static bool get_dict_files_from_settings(vector<path>* dict_files,
                                          DictSettings& settings,
-                                         ResourceResolver* source_resolver) {
+                                         ResourceResolver* source_resolver,
+                                         const string& name_space) {
   if (auto tables = settings.GetTables()) {
     for (auto it = tables->begin(); it != tables->end(); ++it) {
       string dict_name = As<ConfigValue>(*it)->str();
+      dict_name = qualify_with_namespace(name_space, dict_name);
       auto dict_file = source_resolver->ResolvePath(dict_name + ".dict.yaml");
       if (!std::filesystem::exists(dict_file)) {
         LOG(ERROR) << "source file '" << dict_file << "' does not exist.";
@@ -77,10 +88,26 @@ static uint32_t compute_dict_file_checksum(uint32_t initial_checksum,
   return cc.Checksum();
 }
 
+static bool has_deployed_primary_artifacts(const string& dict_name) {
+  the<ResourceResolver> table_resolver(
+      Service::instance().CreateDeployedResourceResolver(
+          {"table", "", ".table.bin"}));
+  the<ResourceResolver> prism_resolver(
+      Service::instance().CreateDeployedResourceResolver(
+          {"prism", "", ".prism.bin"}));
+  auto table_path = table_resolver->ResolvePath(dict_name);
+  auto prism_path = prism_resolver->ResolvePath(dict_name);
+  return std::filesystem::exists(table_path) &&
+         std::filesystem::exists(prism_path);
+}
+
 bool DictCompiler::Compile(const path& schema_file) {
   LOG(INFO) << "compiling dictionary for " << schema_file;
   bool build_table_from_source = true;
   DictSettings settings;
+  path dict_path(dict_name_);
+  const string dict_namespace = dict_path.parent_path().generic_u8string();
+  const string default_dict_name = dict_path.filename().generic_u8string();
   auto dict_file = source_resolver_->ResolvePath(dict_name_ + ".dict.yaml");
   if (!std::filesystem::exists(dict_file)) {
     LOG(ERROR) << "source file '" << dict_file << "' does not exist.";
@@ -91,11 +118,33 @@ bool DictCompiler::Compile(const path& schema_file) {
   }
   vector<path> dict_files;
   if (!get_dict_files_from_settings(&dict_files, settings,
-                                    source_resolver_.get())) {
+                                    source_resolver_.get(), dict_namespace)) {
     return false;
   }
   uint32_t dict_file_checksum =
       compute_dict_file_checksum(0, dict_files, settings);
+  if (build_table_from_source && !dict_namespace.empty() &&
+      !default_dict_name.empty()) {
+    auto default_dict_file =
+        source_resolver_->ResolvePath(default_dict_name + ".dict.yaml");
+    if (std::filesystem::exists(default_dict_file)) {
+      DictSettings default_settings;
+      vector<path> default_dict_files;
+      if (load_dict_settings_from_file(&default_settings, default_dict_file) &&
+          get_dict_files_from_settings(&default_dict_files, default_settings,
+                                       source_resolver_.get(), string())) {
+        uint32_t default_checksum =
+            compute_dict_file_checksum(0, default_dict_files, default_settings);
+        if (default_checksum == dict_file_checksum &&
+            has_deployed_primary_artifacts(default_dict_name)) {
+          LOG(INFO) << "dictionary source for '" << dict_name_
+                    << "' is identical to default '" << default_dict_name
+                    << "', reusing default primary artifacts.";
+          return true;
+        }
+      }
+    }
+  }
   uint32_t schema_file_checksum =
       schema_file.empty() ? 0 : Checksum(schema_file);
   bool rebuild_table = false;
@@ -181,7 +230,7 @@ bool DictCompiler::Compile(const path& schema_file) {
     }
     vector<path> dict_files;
     if (!get_dict_files_from_settings(&dict_files, settings,
-                                      source_resolver_.get())) {
+                                      source_resolver_.get(), dict_namespace)) {
       continue;
     }
     uint32_t pack_file_checksum =
@@ -209,7 +258,26 @@ bool DictCompiler::Compile(const path& schema_file) {
 
 static path relocate_target(const path& source_path,
                             ResourceResolver* target_resolver) {
-  auto resource_id = source_path.filename().u8string();
+  auto& deployer = Service::instance().deployer();
+  std::array<path, 2> source_roots = {deployer.staging_dir,
+                                      deployer.prebuilt_data_dir};
+  string resource_id;
+  for (const auto& source_root : source_roots) {
+    std::error_code ec;
+    path relative = std::filesystem::relative(source_path, source_root, ec);
+    if (ec || relative.empty()) {
+      continue;
+    }
+    auto first = relative.begin();
+    if (first != relative.end() && *first == "..") {
+      continue;
+    }
+    resource_id = relative.generic_u8string();
+    break;
+  }
+  if (resource_id.empty()) {
+    resource_id = source_path.filename().u8string();
+  }
   return target_resolver->ResolvePath(resource_id);
 }
 

@@ -33,6 +33,132 @@ namespace fs = std::filesystem;
 
 namespace rime {
 
+namespace {
+
+string GetResourceIdFromSchemaPath(const path& root, const path& schema_path) {
+  std::error_code ec;
+  path relative = fs::relative(schema_path, root, ec);
+  if (ec || relative.empty()) {
+    return string();
+  }
+  auto resource_id = relative.generic_u8string();
+  if (boost::ends_with(resource_id, ".schema.yaml")) {
+    boost::erase_tail(resource_id, string(".schema.yaml").length());
+  }
+  return resource_id;
+}
+
+string GetNamespaceFromResourceId(const string& resource_id) {
+  path p(resource_id);
+  if (!p.has_parent_path()) {
+    return string();
+  }
+  return p.parent_path().generic_u8string();
+}
+
+string QualifyWithNamespace(const string& name_space,
+                            const string& resource_id) {
+  if (name_space.empty() || path(resource_id).has_parent_path()) {
+    return resource_id;
+  }
+  return (path(name_space) / resource_id).generic_u8string();
+}
+
+void QualifyDictionarySettings(const string& name_space, Config* config) {
+  if (name_space.empty() || !config) {
+    return;
+  }
+  string dict_name;
+  if (config->GetString("translator/dictionary", &dict_name)) {
+    config->SetString("translator/dictionary",
+                      QualifyWithNamespace(name_space, dict_name));
+  }
+  string prism_name;
+  if (config->GetString("translator/prism", &prism_name)) {
+    config->SetString("translator/prism",
+                      QualifyWithNamespace(name_space, prism_name));
+  }
+  if (auto packs = config->GetList("translator/packs")) {
+    for (size_t i = 0; i < packs->size(); ++i) {
+      auto value = packs->GetValueAt(i);
+      if (!value) {
+        continue;
+      }
+      packs->SetAt(
+          i, New<ConfigValue>(QualifyWithNamespace(name_space, value->str())));
+    }
+  }
+}
+
+string GetSchemaIdFromSchemaListEntry(an<ConfigMap> item) {
+  if (!item) {
+    return string();
+  }
+  auto schema_property = item->GetValue("schema");
+  if (!schema_property) {
+    return string();
+  }
+  auto schema_id = schema_property->str();
+  if (schema_id.empty()) {
+    return schema_id;
+  }
+  string name_space;
+  if (auto namespace_property = item->GetValue("namespace")) {
+    name_space = namespace_property->str();
+  }
+  return QualifyWithNamespace(name_space, schema_id);
+}
+
+bool IsWithinDirectory(const path& candidate, const path& root) {
+  std::error_code ec;
+  auto relative = fs::relative(candidate, root, ec);
+  if (ec || relative.empty()) {
+    return false;
+  }
+  auto first = relative.begin();
+  if (first == relative.end()) {
+    return false;
+  }
+  return *first != "..";
+}
+
+vector<path> BuildSkipRoots(Deployer* deployer) {
+  vector<path> skip_roots;
+  if (!deployer) {
+    return skip_roots;
+  }
+  skip_roots.push_back(deployer->staging_dir);
+  skip_roots.push_back(deployer->sync_dir);
+  skip_roots.push_back(deployer->user_data_dir / "trash");
+  skip_roots.push_back(deployer->prebuilt_data_dir);
+  return skip_roots;
+}
+
+bool ShouldSkipScanDirectory(const path& entry,
+                             const vector<path>& skip_roots) {
+  if (boost::ends_with(entry.filename().generic_u8string(), ".userdb")) {
+    return true;
+  }
+  for (const auto& skip_root : skip_roots) {
+    if (IsWithinDirectory(entry, skip_root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ShouldSkipBackupPath(const path& file_path,
+                          const vector<path>& skip_roots) {
+  for (const auto& skip_root : skip_roots) {
+    if (IsWithinDirectory(file_path, skip_root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 DetectModifications::DetectModifications(TaskInitializer arg) {
   try {
     data_dirs_ = std::any_cast<vector<path>>(arg);
@@ -43,14 +169,23 @@ DetectModifications::DetectModifications(TaskInitializer arg) {
 
 bool DetectModifications::Run(Deployer* deployer) {
   time_t last_modified = 0;
+  const auto skip_roots = BuildSkipRoots(deployer);
   try {
     for (auto dir : data_dirs_) {
       path p = fs::canonical(dir);
       last_modified = (std::max)(last_modified,
                                  filesystem::to_time_t(fs::last_write_time(p)));
       if (fs::is_directory(p)) {
-        for (fs::directory_iterator iter(p), end; iter != end; ++iter) {
+        for (fs::recursive_directory_iterator iter(p), end; iter != end;
+             ++iter) {
           path entry(iter->path());
+          if (fs::is_directory(entry)) {
+            if (iter.depth() >= 1 ||
+                ShouldSkipScanDirectory(entry, skip_roots)) {
+              iter.disable_recursion_pending();
+            }
+            continue;
+          }
           if (fs::is_regular_file(fs::canonical(entry)) &&
               entry.extension().u8string() == ".yaml" &&
               entry.filename().u8string() != "user.yaml") {
@@ -214,7 +349,7 @@ bool WorkspaceUpdate::Run(Deployer* deployer) {
       }
       return;
     }
-    the<DeploymentTask> t(new SchemaUpdate(schema_path));
+    the<DeploymentTask> t(new SchemaUpdate(schema_path, schema_id));
     if (t->Run(deployer))
       ++success;
     else
@@ -228,8 +363,12 @@ bool WorkspaceUpdate::Run(Deployer* deployer) {
     auto schema_property = item->GetValue("schema");
     if (!schema_property)
       continue;
-    const string& schema_id = schema_property->str();
+    const string schema_id = GetSchemaIdFromSchemaListEntry(item);
+    if (schema_id.empty()) {
+      continue;
+    }
     build_schema(schema_id);
+    const string name_space = GetNamespaceFromResourceId(schema_id);
     the<Config> schema_config(schema_component->Create(schema_id));
     if (!schema_config)
       continue;
@@ -238,7 +377,8 @@ bool WorkspaceUpdate::Run(Deployer* deployer) {
         auto dependency = As<ConfigValue>(*d);
         if (!dependency)
           continue;
-        const string& dependency_id = dependency->str();
+        const string dependency_id =
+            QualifyWithNamespace(name_space, dependency->str());
         bool as_dependency = true;
         build_schema(dependency_id, as_dependency);
       }
@@ -331,27 +471,32 @@ bool SchemaUpdate::Run(Deployer* deployer) {
                << "'.";
     return false;
   }
-  string schema_id;
+  string schema_id_in_file;
   the<Config> config(new Config);
   if (!config->LoadFromFile(source_path_) ||
-      !config->GetString("schema/schema_id", &schema_id) || schema_id.empty()) {
+      !config->GetString("schema/schema_id", &schema_id_in_file) ||
+      schema_id_in_file.empty()) {
     LOG(ERROR) << "invalid schema definition in '" << source_path_ << "'.";
     return false;
   }
+  string effective_schema_id =
+      schema_id_.empty() ? schema_id_in_file : schema_id_;
+  const string name_space = GetNamespaceFromResourceId(effective_schema_id);
 
-  the<DeploymentTask> config_file_update(
-      new ConfigFileUpdate(schema_id + ".schema.yaml", "schema/version"));
+  the<DeploymentTask> config_file_update(new ConfigFileUpdate(
+      effective_schema_id + ".schema.yaml", "schema/version"));
   if (!config_file_update->Run(deployer)) {
     return false;
   }
   // reload compiled config
-  config.reset(Config::Require("schema")->Create(schema_id));
+  config.reset(Config::Require("schema")->Create(effective_schema_id));
+  QualifyDictionarySettings(name_space, config.get());
   string dict_name;
   if (!config->GetString("translator/dictionary", &dict_name)) {
     // not requiring a dictionary
     return true;
   }
-  Schema schema(schema_id, config.release());
+  Schema schema(effective_schema_id, config.release());
   the<Dictionary> dict(
       Dictionary::Require("dictionary")->Create({&schema, "translator"}));
   if (!dict) {
@@ -371,7 +516,7 @@ bool SchemaUpdate::Run(Deployer* deployer) {
   the<ResourceResolver> resolver(
       Service::instance().CreateDeployedResourceResolver(
           {"compiled_schema", "", ".schema.yaml"}));
-  auto compiled_schema = resolver->ResolvePath(schema_id);
+  auto compiled_schema = resolver->ResolvePath(effective_schema_id);
   if (!dict_compiler.Compile(compiled_schema)) {
     LOG(ERROR) << "dictionary '" << dict_name << "' failed to compile.";
     return false;
@@ -457,11 +602,20 @@ bool PrebuildAllSchemas::Run(Deployer* deployer) {
   if (!fs::exists(shared_data_path) || !fs::is_directory(shared_data_path))
     return false;
   bool success = true;
-  for (fs::directory_iterator iter(shared_data_path), end; iter != end;
-       ++iter) {
+  const auto skip_roots = BuildSkipRoots(deployer);
+  for (fs::recursive_directory_iterator iter(shared_data_path), end;
+       iter != end; ++iter) {
     path entry(iter->path());
+    if (fs::is_directory(entry)) {
+      if (iter.depth() >= 1 || ShouldSkipScanDirectory(entry, skip_roots)) {
+        iter.disable_recursion_pending();
+      }
+      continue;
+    }
     if (boost::ends_with(entry.filename().u8string(), ".schema.yaml")) {
-      the<DeploymentTask> t(new SchemaUpdate(entry));
+      const string schema_id =
+          GetResourceIdFromSchemaPath(shared_data_path, entry);
+      the<DeploymentTask> t(new SchemaUpdate(entry, schema_id));
       if (!t->Run(deployer))
         success = false;
     }
@@ -552,16 +706,31 @@ bool BackupConfigFiles::Run(Deployer* deployer) {
     return false;
   }
   int success = 0, failure = 0, latest = 0, skipped = 0;
-  for (fs::directory_iterator iter(user_data_path), end; iter != end; ++iter) {
+  const auto skip_roots = BuildSkipRoots(deployer);
+  for (fs::recursive_directory_iterator iter(user_data_path), end; iter != end;
+       ++iter) {
     path entry(iter->path());
     if (!fs::is_regular_file(entry))
+      continue;
+    if (ShouldSkipBackupPath(entry, skip_roots))
       continue;
     auto file_extension = entry.extension().u8string();
     bool is_yaml_file = file_extension == ".yaml";
     bool is_text_file = file_extension == ".txt";
     if (!is_yaml_file && !is_text_file)
       continue;
-    path backup = backup_dir / entry.filename();
+    std::error_code ec;
+    auto relative = fs::relative(entry, user_data_path, ec);
+    if (ec || relative.empty()) {
+      ++failure;
+      continue;
+    }
+    path backup = backup_dir / relative;
+    if (backup.has_parent_path() && !fs::exists(backup.parent_path()) &&
+        !MaybeCreateDirectory(backup.parent_path())) {
+      ++failure;
+      continue;
+    }
     if (fs::exists(backup) && Checksum(backup) == Checksum(entry)) {
       ++latest;  // already up-to-date
       continue;
@@ -570,7 +739,7 @@ bool BackupConfigFiles::Run(Deployer* deployer) {
       ++skipped;  // customized copy
       continue;
     }
-    std::error_code ec;
+    ec.clear();
     fs::copy_file(entry, backup, fs::copy_options::overwrite_existing, ec);
     if (ec) {
       LOG(ERROR) << "error backing up file " << backup;

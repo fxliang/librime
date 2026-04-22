@@ -4,11 +4,15 @@
 //
 
 #include <sstream>
+#include <fstream>
+#include <filesystem>
 #include <gtest/gtest.h>
 #include <rime/component.h>
 #include <rime/config.h>
+#include <rime/service.h>
 
 using namespace rime;
+namespace fs = std::filesystem;
 
 class RimeConfigCompilerTestBase : public ::testing::Test {
  protected:
@@ -253,6 +257,21 @@ TEST_F(RimeConfigMergeTest, CreateListWithInplacePatch) {
   EXPECT_EQ(16, config_->GetListSize(prefix + "all_ground_units"));
 }
 
+TEST_F(RimeConfigMergeTest, AppendToPlusKeyInMap) {
+  const string& prefix = "append_to_plus_key_in_map/";
+  EXPECT_TRUE(config_->IsNull(prefix + "__include"));
+  EXPECT_TRUE(config_->IsNull(prefix + "__patch"));
+  EXPECT_TRUE(config_->IsList(prefix + "translator/comment_format"));
+  EXPECT_EQ(2, config_->GetListSize(prefix + "translator/comment_format"));
+  string item;
+  EXPECT_TRUE(
+      config_->GetString(prefix + "translator/comment_format/@0", &item));
+  EXPECT_EQ("xform/^~//", item);
+  EXPECT_TRUE(
+      config_->GetString(prefix + "translator/comment_format/@1", &item));
+  EXPECT_EQ("xlit|abc|abc|", item);
+}
+
 TEST_F(RimeConfigCircularDependencyTest, BestEffortResolution) {
   const string& prefix = "test/";
   EXPECT_TRUE(config_->IsNull(prefix + "__patch"));
@@ -263,4 +282,105 @@ TEST_F(RimeConfigCircularDependencyTest, BestEffortResolution) {
   string work;
   EXPECT_TRUE(config_->GetString(prefix + "work", &work));
   EXPECT_EQ("excited", work);
+}
+
+namespace {
+
+struct ScopedDataDirs {
+  ScopedDataDirs(const path& user_data_dir, const path& shared_data_dir) {
+    auto& deployer = Service::instance().deployer();
+    old_user_data_dir = deployer.user_data_dir;
+    old_shared_data_dir = deployer.shared_data_dir;
+    deployer.user_data_dir = user_data_dir;
+    deployer.shared_data_dir = shared_data_dir;
+  }
+
+  ~ScopedDataDirs() {
+    auto& deployer = Service::instance().deployer();
+    deployer.user_data_dir = old_user_data_dir;
+    deployer.shared_data_dir = old_shared_data_dir;
+  }
+
+  path old_user_data_dir;
+  path old_shared_data_dir;
+};
+
+void WriteConfigFile(const path& file_path, const string& content) {
+  fs::create_directories(file_path.parent_path());
+  std::ofstream ofs(file_path.string());
+  ofs << content;
+}
+
+path CreateTempTestRoot() {
+  auto root = fs::temp_directory_path() / "rime-config-include-ns-test";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  return root;
+}
+
+}  // namespace
+
+TEST(RimeConfigNamespaceIncludeTest, PreferNamespacedResource) {
+  auto root = CreateTempTestRoot();
+  auto user_data_dir = root / "user";
+  auto shared_data_dir = root / "shared";
+  fs::create_directories(user_data_dir);
+  fs::create_directories(shared_data_dir);
+  WriteConfigFile(user_data_dir / "ns/main.yaml",
+                  "test:\n  __include: base:/\n");
+  WriteConfigFile(user_data_dir / "ns/base.yaml", "value: 2\n");
+  WriteConfigFile(user_data_dir / "base.yaml", "value: 1\n");
+
+  ScopedDataDirs scoped(user_data_dir, shared_data_dir);
+  the<Config::Component> component(new ConfigComponent<ConfigBuilder>);
+  the<Config> config(component->Create("ns/main"));
+  ASSERT_TRUE(config);
+
+  int value = 0;
+  EXPECT_TRUE(config->GetInt("test/value", &value));
+  EXPECT_EQ(2, value);
+  fs::remove_all(root);
+}
+
+TEST(RimeConfigNamespaceIncludeTest, FallbackToDefaultNamespaceResource) {
+  auto root = CreateTempTestRoot();
+  auto user_data_dir = root / "user";
+  auto shared_data_dir = root / "shared";
+  fs::create_directories(user_data_dir);
+  fs::create_directories(shared_data_dir);
+  WriteConfigFile(user_data_dir / "ns/main.yaml",
+                  "test:\n  __include: base:/\n");
+  WriteConfigFile(user_data_dir / "base.yaml", "value: 1\n");
+
+  ScopedDataDirs scoped(user_data_dir, shared_data_dir);
+  the<Config::Component> component(new ConfigComponent<ConfigBuilder>);
+  the<Config> config(component->Create("ns/main"));
+  ASSERT_TRUE(config);
+
+  int value = 0;
+  EXPECT_TRUE(config->GetInt("test/value", &value));
+  EXPECT_EQ(1, value);
+  fs::remove_all(root);
+}
+
+TEST(RimeConfigNamespaceIncludeTest, DisableFallbackWithUseNamespaceResources) {
+  auto root = CreateTempTestRoot();
+  auto user_data_dir = root / "user";
+  auto shared_data_dir = root / "shared";
+  fs::create_directories(user_data_dir);
+  fs::create_directories(shared_data_dir);
+  WriteConfigFile(user_data_dir / "ns/main.yaml",
+                  "schema:\n"
+                  "  namespace_resources_only: true\n"
+                  "test:\n"
+                  "  __include: base:/?\n");
+  WriteConfigFile(user_data_dir / "base.yaml", "value: 1\n");
+
+  ScopedDataDirs scoped(user_data_dir, shared_data_dir);
+  the<Config::Component> component(new ConfigComponent<ConfigBuilder>);
+  the<Config> config(component->Create("ns/main"));
+  ASSERT_TRUE(config);
+  EXPECT_TRUE(config->IsNull("test/value"));
+
+  fs::remove_all(root);
 }

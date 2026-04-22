@@ -46,13 +46,16 @@ class RIME_DLL WorkspaceUpdate : public DeploymentTask {
 // update a specific schema, build corresponding dictionary
 class RIME_DLL SchemaUpdate : public DeploymentTask {
  public:
-  explicit SchemaUpdate(const path& source_path) : source_path_(source_path) {}
+  explicit SchemaUpdate(const path& source_path,
+                        const string& schema_id = string())
+      : source_path_(source_path), schema_id_(schema_id) {}
   SchemaUpdate(TaskInitializer arg);
   bool Run(Deployer* deployer);
   void set_verbose(bool verbose) { verbose_ = verbose; }
 
  protected:
   path source_path_;
+  string schema_id_;
   bool verbose_ = false;
 };
 

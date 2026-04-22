@@ -54,3 +54,15 @@ create_list_with_inplace_patch:
       - __append: [scv, marine, firebat, vulture, tank]
       - __append: {__include: starcraft/protoss/ground_units}
       - __append: {__include: starcraft/zerg/ground_units}
+
+append_to_plus_key_in_map_base:
+  translator:
+    comment_format:
+      "+":
+        - "xform/^~//"
+
+append_to_plus_key_in_map:
+  __include: append_to_plus_key_in_map_base
+  __patch:
+    translator/comment_format/+:
+      - "xlit|abc|abc|"

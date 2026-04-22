@@ -6,6 +6,7 @@
 //
 
 #include <ctime>
+#include <map>
 #include <rime/candidate.h>
 #include <rime/common.h>
 #include <rime/config.h>
@@ -15,6 +16,18 @@
 #include <rime/gear/schema_list_translator.h>
 
 namespace rime {
+
+namespace {
+
+string DisplayTagForSchemaId(const string& schema_id) {
+  auto schema_path = path(schema_id);
+  if (!schema_path.has_parent_path()) {
+    return string();
+  }
+  return schema_path.parent_path().generic_u8string();
+}
+
+}  // namespace
 
 class SchemaSelection : public SimpleCandidate, public SwitcherCommand {
  public:
@@ -91,15 +104,17 @@ void SchemaListTranslation::LoadSchemaList(Switcher* switcher) {
     return;
   // current schema comes first
   Schema* current_schema = engine->schema();
+  vector<an<SchemaSelection>> schema_candidates;
   if (current_schema) {
-    Append(New<SchemaSelection>(current_schema));
+    schema_candidates.push_back(New<SchemaSelection>(current_schema));
   }
   Config* user_config = switcher->user_config();
-  size_t fixed = candies_.size();
+  size_t fixed = schema_candidates.size();
   time_t now = time(NULL);
   // load the rest schema list
-  Switcher::ForEachSchemaListEntry(config, [this, current_schema, user_config,
-                                            now](const string& schema_id) {
+  Switcher::ForEachSchemaListEntry(config, [current_schema, user_config, now,
+                                            &schema_candidates](
+                                               const string& schema_id) {
     if (current_schema && schema_id == current_schema->schema_id())
       return /* continue = */ true;
     Schema schema(schema_id);
@@ -110,9 +125,21 @@ void SchemaListTranslation::LoadSchemaList(Switcher* switcher) {
       if (timestamp <= now)
         cand->set_quality(timestamp);
     }
-    Append(cand);
+    schema_candidates.push_back(cand);
     return /* continue = */ true;
   });
+  map<string, int> schema_name_count;
+  for (const auto& cand : schema_candidates) {
+    ++schema_name_count[cand->text()];
+  }
+  for (const auto& cand : schema_candidates) {
+    auto schema_tag = DisplayTagForSchemaId(cand->keyword());
+    auto schema_path = path(cand->keyword());
+    if (schema_path.has_parent_path() && !schema_tag.empty()) {
+      cand->set_comment(schema_tag);
+    }
+    Append(cand);
+  }
   DLOG(INFO) << "num schemata: " << candies_.size();
   bool fix_order = false;
   config->GetBool("switcher/fix_schema_list_order", &fix_order);

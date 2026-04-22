@@ -29,6 +29,67 @@ static const char* quote_right = "\xe3\x80\x95";  //"\xef\xbc\x89";
 
 namespace rime {
 
+namespace {
+
+string SchemaNamespace(const Ticket& ticket) {
+  if (!ticket.schema) {
+    return string();
+  }
+  auto ns = path(ticket.schema->schema_id()).parent_path();
+  return ns.empty() ? string() : ns.generic_u8string();
+}
+
+bool NamespaceResourcesOnly(const Ticket& ticket) {
+  if (!ticket.engine || !ticket.engine->schema()) {
+    return false;
+  }
+  auto* config = ticket.engine->schema()->config();
+  if (!config) {
+    return false;
+  }
+  bool namespace_resources_only = false;
+  return config->GetBool("schema/namespace_resources_only",
+                         &namespace_resources_only) &&
+         namespace_resources_only;
+}
+
+path ResolveOpenccConfigPath(const Ticket& ticket,
+                             const string& opencc_config) {
+  path opencc_config_path(opencc_config);
+  if (!opencc_config_path.is_relative()) {
+    return opencc_config_path;
+  }
+
+  const auto schema_namespace = SchemaNamespace(ticket);
+  const bool namespace_only = NamespaceResourcesOnly(ticket);
+  auto& deployer = Service::instance().deployer();
+
+  vector<path> candidates;
+  if (!schema_namespace.empty() && !opencc_config_path.has_parent_path()) {
+    candidates.push_back(deployer.user_data_dir / schema_namespace / "opencc" /
+                         opencc_config_path);
+    candidates.push_back(deployer.shared_data_dir / schema_namespace /
+                         "opencc" / opencc_config_path);
+  }
+  if (!namespace_only || schema_namespace.empty()) {
+    candidates.push_back(deployer.user_data_dir / "opencc" /
+                         opencc_config_path);
+    candidates.push_back(deployer.shared_data_dir / "opencc" /
+                         opencc_config_path);
+  }
+  for (const auto& candidate : candidates) {
+    if (exists(candidate)) {
+      return candidate;
+    }
+  }
+  if (!candidates.empty()) {
+    return candidates.front();
+  }
+  return opencc_config_path;
+}
+
+}  // namespace
+
 class Opencc {
  public:
   Opencc(const path& config_path)
@@ -310,30 +371,19 @@ Simplifier* SimplifierComponent::Create(const Ticket& ticket) {
   if (opencc_config.empty()) {
     opencc_config = "t2s.json";  // default opencc config file
   }
-  opencc = opencc_map_[opencc_config].lock();
+  path opencc_config_path = ResolveOpenccConfigPath(ticket, opencc_config);
+  const auto opencc_cache_key = opencc_config_path.generic_u8string();
+  opencc = opencc_map_[opencc_cache_key].lock();
   if (opencc) {
     return new Simplifier(ticket, opencc);
   }
-  path opencc_config_path = path(opencc_config);
   if (opencc_config_path.extension().u8string() == ".ini") {
     LOG(ERROR) << "please upgrade opencc_config to an opencc 1.0 config file.";
     return nullptr;
   }
-  if (opencc_config_path.is_relative()) {
-    path user_config_path = Service::instance().deployer().user_data_dir;
-    path shared_config_path = Service::instance().deployer().shared_data_dir;
-    (user_config_path /= "opencc") /= opencc_config_path;
-    (shared_config_path /= "opencc") /= opencc_config_path;
-    if (exists(user_config_path)) {
-      opencc_config_path = user_config_path;
-    } else if (exists(shared_config_path)) {
-      opencc_config_path = shared_config_path;
-    }
-  }
   try {
     opencc = New<Opencc>(opencc_config_path);
-    // 以原始配置中的文件路径作为 key，避免重复查找文件
-    opencc_map_[opencc_config] = opencc;
+    opencc_map_[opencc_cache_key] = opencc;
   } catch (opencc::Exception& e) {
     LOG(ERROR) << "Error initializing opencc: " << e.what();
     return nullptr;

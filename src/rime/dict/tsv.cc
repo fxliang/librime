@@ -5,6 +5,7 @@
 // 2013-04-14 GONG Chen <chen.sst@gmail.com>
 //
 #include <fstream>
+#include <filesystem>
 #include <boost/algorithm/string.hpp>
 #include <rime/common.h>
 #include <rime/dict/db_utils.h>
@@ -60,6 +61,15 @@ int TsvWriter::operator()(Source* source) {
   if (!source)
     return 0;
   LOG(INFO) << "writing tsv file: " << file_path_;
+  if (file_path_.has_parent_path()) {
+    std::error_code ec;
+    if (!std::filesystem::create_directories(file_path_.parent_path(), ec) &&
+        ec && !std::filesystem::exists(file_path_.parent_path())) {
+      LOG(ERROR) << "failed to create directory '" << file_path_.parent_path()
+                 << "'.";
+      return 0;
+    }
+  }
   std::ofstream fout(file_path_.c_str());
   if (!file_description.empty()) {
     fout << "# " << file_description << std::endl;

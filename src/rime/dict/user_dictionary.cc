@@ -608,6 +608,11 @@ UserDictionary* UserDictionaryComponent::Create(const Ticket& ticket) {
   if (config->GetString(ticket.name_space + "/db_class", &db_class)) {
     // user specified db class
   }
+  auto schema_path = path(ticket.schema->schema_id());
+  auto schema_namespace = schema_path.parent_path().generic_u8string();
+  if (!schema_namespace.empty() && !path(dict_name).has_parent_path()) {
+    dict_name = (path(schema_namespace) / dict_name).generic_u8string();
+  }
   // obtain userdb object
   return Create(dict_name, db_class);
 }

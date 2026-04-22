@@ -5,6 +5,7 @@
 // 2011-07-03 GONG Chen <chen.sst@gmail.com>
 //
 #include <gtest/gtest.h>
+#include <filesystem>
 #include <rime/algo/syllabifier.h>
 #include <rime/dict/text_db.h>
 #include <rime/dict/user_db.h>
@@ -88,4 +89,19 @@ TEST(RimeUserDbTest, Query) {
     EXPECT_FALSE(accessor->GetNextRecord(&key, &value));
   }
   db.Close();
+}
+
+TEST(RimeUserDbTest, BackupToNestedPath) {
+  namespace fs = std::filesystem;
+  const path db_path{"user_db_backup_nested_test.txt"};
+  TestDb db(db_path, "user_db_backup_nested_test");
+  if (db.Exists())
+    db.Remove();
+  ASSERT_TRUE(db.Open());
+  ASSERT_TRUE(db.Update("abc", "ZYX"));
+  const path snapshot_path{"sync/ns/user_db_backup_nested_test.userdb.txt"};
+  ASSERT_TRUE(db.Backup(snapshot_path));
+  EXPECT_TRUE(fs::exists(snapshot_path));
+  EXPECT_TRUE(db.Close());
+  fs::remove_all("sync");
 }

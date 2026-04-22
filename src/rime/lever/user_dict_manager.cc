@@ -5,6 +5,7 @@
 // 2012-03-23 GONG Chen <chen.sst@gmail.com>
 //
 #include <fstream>
+#include <set>
 #include <boost/algorithm/string.hpp>
 #include <filesystem>
 #include <boost/scope_exit.hpp>
@@ -39,12 +40,27 @@ void UserDictManager::GetUserDictList(UserDictList* user_dict_list,
     LOG(INFO) << "directory '" << path_ << "' does not exist.";
     return;
   }
-  for (fs::directory_iterator it(path_), end; it != end; ++it) {
-    string name = it->path().filename().u8string();
-    if (boost::ends_with(name, component->extension())) {
-      boost::erase_last(name, component->extension());
-      user_dict_list->push_back(name);
+  std::set<string> names;
+  for (fs::recursive_directory_iterator it(path_), end; it != end; ++it) {
+    const path entry_path = it->path();
+    string name = entry_path.filename().u8string();
+    if (!boost::ends_with(name, component->extension())) {
+      continue;
     }
+    std::error_code ec;
+    path relative = fs::relative(entry_path, path_, ec);
+    if (ec || relative.empty()) {
+      continue;
+    }
+    string dict_name = relative.generic_u8string();
+    boost::erase_last(dict_name, component->extension());
+    names.insert(dict_name);
+    if (fs::is_directory(entry_path)) {
+      it.disable_recursion_pending();
+    }
+  }
+  for (const auto& name : names) {
+    user_dict_list->push_back(name);
   }
 }
 
@@ -67,7 +83,17 @@ bool UserDictManager::Backup(const string& dict_name) {
     }
   }
   string snapshot_file = dict_name + UserDb::snapshot_extension();
-  return db->Backup(dir / snapshot_file);
+  path snapshot_path = dir / snapshot_file;
+  if (snapshot_path.has_parent_path()) {
+    std::error_code ec;
+    if (!fs::create_directories(snapshot_path.parent_path(), ec) && ec &&
+        !fs::exists(snapshot_path.parent_path())) {
+      LOG(ERROR) << "error creating directory '" << snapshot_path.parent_path()
+                 << "'.";
+      return false;
+    }
+  }
+  return db->Backup(snapshot_path);
 }
 
 bool UserDictManager::Restore(const path& snapshot_file) {
@@ -171,6 +197,15 @@ bool UserDictManager::UpgradeUserDict(const string& dict_name) {
   }
   string snapshot_file = dict_name + UserDb::snapshot_extension();
   path snapshot_path = trash / snapshot_file;
+  if (snapshot_path.has_parent_path()) {
+    std::error_code ec;
+    if (!fs::create_directories(snapshot_path.parent_path(), ec) && ec &&
+        !fs::exists(snapshot_path.parent_path())) {
+      LOG(ERROR) << "error creating directory '" << snapshot_path.parent_path()
+                 << "'.";
+      return false;
+    }
+  }
   return legacy_db->Backup(snapshot_path) && legacy_db->Close() &&
          legacy_db->Remove() && Restore(snapshot_path);
 }

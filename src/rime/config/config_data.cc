@@ -90,6 +90,15 @@ bool ConfigData::SaveToFile(const path& file_path) {
     return false;
   }
   LOG(INFO) << "saving config file '" << file_path << "'.";
+  if (file_path.has_parent_path()) {
+    std::error_code ec;
+    if (!std::filesystem::create_directories(file_path.parent_path(), ec) &&
+        ec && !std::filesystem::exists(file_path.parent_path())) {
+      LOG(ERROR) << "Error creating config directory \""
+                 << file_path.parent_path() << "\" : " << ec.message();
+      return false;
+    }
+  }
   // dump tree
   std::ofstream out(file_path.c_str());
   return SaveToStream(out);

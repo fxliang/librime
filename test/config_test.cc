@@ -205,6 +205,19 @@ TEST(RimeConfigWriterTest, Greetings) {
   EXPECT_FALSE(config3->GetMap("zergs/overmind"));
 }
 
+TEST(RimeConfigWriterTest, SaveToNestedPath) {
+  Config config;
+  EXPECT_TRUE(config.SetString("nested/key", "value"));
+  path file_path("nested_config/path/config.yaml");
+  EXPECT_TRUE(config.SaveToFile(file_path));
+
+  Config loaded;
+  EXPECT_TRUE(loaded.LoadFromFile(file_path));
+  string value;
+  EXPECT_TRUE(loaded.GetString("nested/key", &value));
+  EXPECT_EQ("value", value);
+}
+
 TEST(RimeConfigxxTest, Operations) {
   Config config;
   config["str"] = "STR";

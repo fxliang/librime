@@ -140,6 +140,14 @@ static an<ConfigValue> ParseSchemaListEntry(Config* config,
       }
     }
   }
+  if (auto namespace_property = entry_map->GetValue("namespace")) {
+    auto name_space = namespace_property->str();
+    auto schema_id = schema_property->str();
+    if (!name_space.empty() && !path(schema_id).has_parent_path()) {
+      return New<ConfigValue>(
+          (path(name_space) / schema_id).generic_u8string());
+    }
+  }
   return schema_property;
 }
 

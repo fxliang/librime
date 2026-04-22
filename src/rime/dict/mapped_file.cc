@@ -52,6 +52,15 @@ MappedFile::~MappedFile() {
 }
 
 bool MappedFile::Create(size_t capacity) {
+  if (file_path_.has_parent_path()) {
+    std::error_code ec;
+    if (!std::filesystem::create_directories(file_path_.parent_path(), ec) &&
+        ec && !std::filesystem::exists(file_path_.parent_path())) {
+      LOG(ERROR) << "failed to create directory '" << file_path_.parent_path()
+                 << "': " << ec.message();
+      return false;
+    }
+  }
   if (Exists()) {
     LOG(INFO) << "overwriting file '" << file_path_ << "'.";
     Resize(capacity);

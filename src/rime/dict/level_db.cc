@@ -5,6 +5,7 @@
 // 2014-12-04 Chen Gong <chen.sst@gmail.com>
 //
 
+#include <filesystem>
 #include <leveldb/db.h>
 #include <leveldb/write_batch.h>
 #include <rime/common.h>
@@ -54,6 +55,13 @@ struct LevelDbWrapper {
   leveldb::Status Open(const path& file_path, bool readonly) {
     leveldb::Options options;
     options.create_if_missing = !readonly;
+    if (!readonly && file_path.has_parent_path()) {
+      std::error_code ec;
+      if (!std::filesystem::create_directories(file_path.parent_path(), ec) &&
+          ec && !std::filesystem::exists(file_path.parent_path())) {
+        return leveldb::Status::IOError(ec.message());
+      }
+    }
     return leveldb::DB::Open(options, file_path.string(), &ptr);
   }
 

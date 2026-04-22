@@ -38,12 +38,23 @@ struct ConfigDependencyGraph {
   }
 
   string current_resource_id() const;
+  string current_resolving_resource_id() const;
 };
 
 string ConfigDependencyGraph::current_resource_id() const {
   return key_stack.empty() ? string()
                            : boost::trim_right_copy_if(key_stack.front(),
                                                        boost::is_any_of(":"));
+}
+
+string ConfigDependencyGraph::current_resolving_resource_id() const {
+  if (resolve_chain.empty()) {
+    return string();
+  }
+  const string& resolving_path = resolve_chain.back();
+  auto separator = resolving_path.find_first_of(":");
+  return separator == string::npos ? resolving_path
+                                   : resolving_path.substr(0, separator);
 }
 
 string Reference::repr() const {
@@ -125,6 +136,29 @@ static bool AppendToList(an<ConfigItemRef> target, an<ConfigList> list) {
   return true;
 }
 
+static bool AppendToPlusKeyInMap(an<ConfigItemRef> target,
+                                 an<ConfigList> list) {
+  if (!list) {
+    return false;
+  }
+  auto existing_map = As<ConfigMap>(**target);
+  if (!existing_map) {
+    return false;
+  }
+  auto existing_plus_list = As<ConfigList>(existing_map->Get("+"));
+  if (!existing_plus_list) {
+    return false;
+  }
+  auto plus_list_copy = New<ConfigList>(*existing_plus_list);
+  for (ConfigList::Iterator iter = list->begin(); iter != list->end(); ++iter) {
+    if (!plus_list_copy->Append(*iter)) {
+      return false;
+    }
+  }
+  *target = plus_list_copy;
+  return true;
+}
+
 static bool EditNode(an<ConfigItemRef> target,
                      const string& key,
                      const an<ConfigItem>& value,
@@ -196,6 +230,7 @@ static bool EditNode(an<ConfigItemRef> head,
     DLOG(INFO) << "writer: editing node";
     return !value ||  // no-op
            (appending && (AppendToString(target, As<ConfigValue>(value)) ||
+                          AppendToPlusKeyInMap(target, As<ConfigList>(value)) ||
                           AppendToList(target, As<ConfigList>(value)))) ||
            (merging && MergeTree(target, As<ConfigMap>(value)));
   } else {
@@ -280,10 +315,17 @@ Reference ConfigCompiler::CreateReference(const string& qualified_path) {
   auto end = qualified_path.find_last_of("?");
   bool optional = end != string::npos;
   auto separator = qualified_path.find_first_of(":");
+  auto current_resource_id = graph_->current_resource_id();
+  auto current_resource_namespace = path(current_resource_id).parent_path();
   string resource_id = resource_resolver_->ToResourceId(
       (separator == string::npos || separator == 0)
-          ? graph_->current_resource_id()
+          ? current_resource_id
           : qualified_path.substr(0, separator));
+  if (separator != string::npos && separator != 0 &&
+      !current_resource_namespace.empty() &&
+      !path(resource_id).has_parent_path()) {
+    resource_id = (current_resource_namespace / resource_id).generic_u8string();
+  }
   string local_path =
       (separator == string::npos)
           ? qualified_path.substr(0, end)
@@ -410,6 +452,43 @@ bool ConfigCompiler::resolved(const string& full_path) const {
   return found == graph_->deps.end() || found->second.empty();
 }
 
+string ConfigCompiler::GetCurrentResolvingResourceId() const {
+  return graph_->current_resolving_resource_id();
+}
+
+static bool UseNamespaceResourcesOnly(an<ConfigResource> resource) {
+  if (!resource || !resource->data) {
+    return false;
+  }
+  auto value = As<ConfigValue>(
+      resource->data->Traverse("schema/namespace_resources_only"));
+  if (!value) {
+    return false;
+  }
+  bool use_namespace_resources = false;
+  return value->GetBool(&use_namespace_resources) && use_namespace_resources;
+}
+
+bool ConfigCompiler::AllowDefaultNamespaceFallback(
+    const string& source_resource_id) const {
+  if (source_resource_id.empty() ||
+      !path(source_resource_id).has_parent_path()) {
+    return true;
+  }
+  auto source_resource = GetCompiledResource(source_resource_id);
+  if (UseNamespaceResourcesOnly(source_resource)) {
+    return false;
+  }
+  if (boost::ends_with(source_resource_id, ".custom")) {
+    auto schema_resource_id =
+        boost::erase_last_copy(source_resource_id, ".custom") + ".schema";
+    if (UseNamespaceResourcesOnly(GetCompiledResource(schema_resource_id))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 vector<of<Dependency>> ConfigCompiler::GetDependencies(const string& path) {
   auto found = graph_->deps.find(path);
   return found == graph_->deps.end() ? vector<of<Dependency>>() : found->second;
@@ -417,20 +496,40 @@ vector<of<Dependency>> ConfigCompiler::GetDependencies(const string& path) {
 
 static an<ConfigItem> ResolveReference(ConfigCompiler* compiler,
                                        const Reference& reference) {
-  auto resource = compiler->GetCompiledResource(reference.resource_id);
-  if (!resource) {
-    DLOG(INFO) << "resource not loaded, compiling: " << reference.resource_id;
-    resource = compiler->Compile(reference.resource_id);
-    if (!resource->loaded) {
-      if (reference.optional) {
-        LOG(INFO) << "optional resource not loaded: " << reference.resource_id;
-      } else {
-        LOG(ERROR) << "resource could not be loaded: " << reference.resource_id;
+  auto load_resource = [compiler](const string& resource_id) {
+    auto resource = compiler->GetCompiledResource(resource_id);
+    if (!resource) {
+      DLOG(INFO) << "resource not loaded, compiling: " << resource_id;
+      resource = compiler->Compile(resource_id);
+    }
+    return resource;
+  };
+
+  auto resource = load_resource(reference.resource_id);
+  if (resource && resource->loaded) {
+    return GetResolvedItem(compiler, resource, reference.local_path);
+  }
+
+  if (compiler->AllowDefaultNamespaceFallback(
+          compiler->GetCurrentResolvingResourceId())) {
+    auto fallback_resource_id =
+        path(reference.resource_id).filename().generic_u8string();
+    if (!fallback_resource_id.empty() &&
+        fallback_resource_id != reference.resource_id) {
+      auto fallback_resource = load_resource(fallback_resource_id);
+      if (fallback_resource && fallback_resource->loaded) {
+        return GetResolvedItem(compiler, fallback_resource,
+                               reference.local_path);
       }
-      return nullptr;
     }
   }
-  return GetResolvedItem(compiler, resource, reference.local_path);
+
+  if (reference.optional) {
+    LOG(INFO) << "optional resource not loaded: " << reference.resource_id;
+  } else {
+    LOG(ERROR) << "resource could not be loaded: " << reference.resource_id;
+  }
+  return nullptr;
 }
 
 // Includes contents of nodes at specified paths.

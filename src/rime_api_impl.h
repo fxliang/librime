@@ -492,7 +492,13 @@ RIME_DEPRECATED Bool RimeGetSchemaList(RimeSchemaList* output) {
     an<ConfigValue> schema_property = item->GetValue("schema");
     if (!schema_property)
       continue;
-    const string& schema_id(schema_property->str());
+    string schema_id(schema_property->str());
+    an<ConfigValue> namespace_property = item->GetValue("namespace");
+    if (namespace_property && !namespace_property->str().empty() &&
+        !path(schema_id).has_parent_path()) {
+      schema_id =
+          (path(namespace_property->str()) / schema_id).generic_u8string();
+    }
     RimeSchemaListItem& x(output->list[output->size]);
     x.schema_id = new char[schema_id.length() + 1];
     strcpy(x.schema_id, schema_id.c_str());

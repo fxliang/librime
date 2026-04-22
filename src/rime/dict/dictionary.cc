@@ -412,6 +412,26 @@ static const ResourceType kPrismResourceType = {"prism", "", ".prism.bin"};
 
 static const ResourceType kTableResourceType = {"table", "", ".table.bin"};
 
+static path ResolveResourcePathWithDefaultNamespaceFallback(
+    ResourceResolver* resolver,
+    const string& resource_id,
+    bool allow_fallback) {
+  auto preferred_path = resolver->ResolvePath(resource_id);
+  if (!allow_fallback || std::filesystem::exists(preferred_path) ||
+      !path(resource_id).has_parent_path()) {
+    return preferred_path;
+  }
+  auto fallback_id = path(resource_id).filename().generic_u8string();
+  if (fallback_id.empty() || fallback_id == resource_id) {
+    return preferred_path;
+  }
+  auto fallback_path = resolver->ResolvePath(fallback_id);
+  if (std::filesystem::exists(fallback_path)) {
+    return fallback_path;
+  }
+  return preferred_path;
+}
+
 DictionaryComponent::DictionaryComponent()
     : prism_resource_resolver_(
           Service::instance().CreateDeployedResourceResolver(
@@ -435,40 +455,59 @@ Dictionary* DictionaryComponent::Create(const Ticket& ticket) {
   if (dict_name.empty()) {
     return nullptr;  // not requiring static dictionary
   }
+  auto schema_namespace = path(ticket.schema->schema_id()).parent_path();
+  auto qualify_with_namespace = [&schema_namespace](string resource_id) {
+    if (schema_namespace.empty() || path(resource_id).has_parent_path()) {
+      return resource_id;
+    }
+    return (schema_namespace / resource_id).generic_u8string();
+  };
+  dict_name = qualify_with_namespace(std::move(dict_name));
   string prism_name;
   if (!config->GetString(ticket.name_space + "/prism", &prism_name)) {
     prism_name = dict_name;
+  } else {
+    prism_name = qualify_with_namespace(std::move(prism_name));
   }
   vector<string> packs;
   if (auto pack_list = config->GetList(ticket.name_space + "/packs")) {
     for (const auto& item : *pack_list) {
       if (auto value = As<ConfigValue>(item)) {
-        packs.push_back(value->str());
+        packs.push_back(qualify_with_namespace(value->str()));
       }
     }
   }
-  return Create(std::move(dict_name), std::move(prism_name), std::move(packs));
+  const bool allow_default_namespace_fallback = ticket.engine != nullptr;
+  return Create(std::move(dict_name), std::move(prism_name), std::move(packs),
+                allow_default_namespace_fallback);
 }
 
 Dictionary* DictionaryComponent::Create(string dict_name,
                                         string prism_name,
-                                        vector<string> packs) {
+                                        vector<string> packs,
+                                        bool allow_default_namespace_fallback) {
   // obtain prism and primary table objects
   auto primary_table = table_map_[dict_name].lock();
   if (!primary_table) {
-    auto file_path = table_resource_resolver_->ResolvePath(dict_name);
+    auto file_path = ResolveResourcePathWithDefaultNamespaceFallback(
+        table_resource_resolver_.get(), dict_name,
+        allow_default_namespace_fallback);
     table_map_[dict_name] = primary_table = New<Table>(file_path);
   }
   auto prism = prism_map_[prism_name].lock();
   if (!prism) {
-    auto file_path = prism_resource_resolver_->ResolvePath(prism_name);
+    auto file_path = ResolveResourcePathWithDefaultNamespaceFallback(
+        prism_resource_resolver_.get(), prism_name,
+        allow_default_namespace_fallback);
     prism_map_[prism_name] = prism = New<Prism>(file_path);
   }
   vector<of<Table>> tables = {std::move(primary_table)};
   for (const auto& pack : packs) {
     auto table = table_map_[pack].lock();
     if (!table) {
-      auto file_path = table_resource_resolver_->ResolvePath(pack);
+      auto file_path = ResolveResourcePathWithDefaultNamespaceFallback(
+          table_resource_resolver_.get(), pack,
+          allow_default_namespace_fallback);
       table_map_[pack] = table = New<Table>(file_path);
     }
     tables.push_back(std::move(table));

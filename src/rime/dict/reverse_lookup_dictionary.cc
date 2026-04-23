@@ -12,6 +12,7 @@
 #include <sstream>
 #include <boost/algorithm/string.hpp>
 #include <rime/config.h>
+#include <rime/namespace_resource_utils.h>
 #include <rime/resource.h>
 #include <rime/schema.h>
 #include <rime/service.h>
@@ -239,53 +240,6 @@ static const ResourceType kReverseDbResourceType = {"reverse_db", "",
 
 namespace {
 
-bool IsRelativePathUnderRoot(const path& full_path, const path& root_path) {
-  if (full_path.empty() || root_path.empty()) {
-    return false;
-  }
-  const auto rel = std::filesystem::absolute(full_path).lexically_relative(
-      std::filesystem::absolute(root_path));
-  if (rel.empty()) {
-    return false;
-  }
-  const auto rel_text = rel.generic_u8string();
-  return rel_text != ".." && rel_text.rfind("../", 0) != 0;
-}
-
-path SchemaNamespacePath(const Ticket& ticket, Config* config) {
-  auto schema_namespace = path(ticket.schema->schema_id()).parent_path();
-  if (!schema_namespace.empty()) {
-    return schema_namespace;
-  }
-  if (!config) {
-    return path();
-  }
-  const auto& config_path = config->file_path();
-  auto parent_path = config_path.parent_path();
-  if (parent_path.empty()) {
-    return path();
-  }
-  auto& deployer = Service::instance().deployer();
-  const vector<path> roots = {deployer.staging_dir, deployer.prebuilt_data_dir,
-                              deployer.user_data_dir, deployer.shared_data_dir};
-  for (const auto& root : roots) {
-    if (!IsRelativePathUnderRoot(config_path, root)) {
-      continue;
-    }
-    auto relative_parent =
-        std::filesystem::absolute(parent_path)
-            .lexically_relative(std::filesystem::absolute(root));
-    if (!relative_parent.empty()) {
-      auto relative_parent_text = relative_parent.generic_u8string();
-      if (relative_parent_text != ".." &&
-          relative_parent_text.rfind("../", 0) != 0) {
-        return relative_parent;
-      }
-    }
-  }
-  return path();
-}
-
 string ResolveDictNameWithNamespaceFallback(ResourceResolver* resolver,
                                             const string& dict_name) {
   if (!resolver || dict_name.empty()) {
@@ -350,18 +304,17 @@ ReverseLookupDictionary* ReverseLookupDictionaryComponent::Create(
     // missing!
     return NULL;
   }
-  auto schema_namespace = SchemaNamespacePath(ticket, config);
-  if (!schema_namespace.empty() && !path(dict_name).has_parent_path()) {
-    auto namespaced_dict_name =
-        (schema_namespace / dict_name).generic_u8string();
-    bool namespace_resources_only = false;
-    config->GetBool("schema/namespace_resources_only",
-                    &namespace_resources_only);
-    if (namespace_resources_only ||
-        std::filesystem::exists(
-            resource_resolver_->ResolvePath(namespaced_dict_name))) {
-      dict_name = std::move(namespaced_dict_name);
-    }
+  const bool namespace_only = NamespaceResourcesOnlyFromConfig(config);
+  const auto candidates = BuildSchemaScopedResourceCandidates(
+      dict_name, ticket.schema->schema_id(), config, namespace_only,
+      /*allow_default_namespace_fallback=*/true,
+      /*allow_parent_path_namespace_candidates=*/true);
+  string resolved_dict_name;
+  if (ResolveFirstExistingResourcePath(candidates, resource_resolver_.get(),
+                                       nullptr, &resolved_dict_name)) {
+    dict_name = std::move(resolved_dict_name);
+  } else if (!candidates.empty()) {
+    dict_name = candidates.front();
   }
   return Create(dict_name);
 }

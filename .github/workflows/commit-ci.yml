@@ -31,13 +31,13 @@ jobs:
     needs: lint
     uses: ./.github/workflows/macos-build.yml
     with:
-      rime_plugins: fxliang/librime-lua@ns lotem/librime-octagram rime/librime-predict
+      rime_plugins: fxliang/librime-lua@ns fxliang/librime-octagram@ns fxliang/librime-predict-leveldb
 
   windows:
     needs: lint
     uses: ./.github/workflows/windows-build.yml
     with:
-      rime_plugins: fxliang/librime-lua@ns lotem/librime-octagram rime/librime-predict
+      rime_plugins: fxliang/librime-lua@ns fxliang/librime-octagram@ns fxliang/librime-predict-leveldb
 
   docker:
     needs: lint

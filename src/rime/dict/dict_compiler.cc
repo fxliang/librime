@@ -9,6 +9,7 @@
 #include <cfloat>
 #include <cmath>
 #include <fstream>
+#include <boost/algorithm/string/predicate.hpp>
 #include <rime/algo/algebra.h>
 #include <rime/algo/utilities.h>
 #include <rime/dict/corrector.h>
@@ -45,25 +46,46 @@ static bool load_dict_settings_from_file(DictSettings* settings,
   return success;
 }
 
-static string qualify_with_namespace(const string& name_space,
-                                     const string& resource_id) {
-  if (name_space.empty() || path(resource_id).has_parent_path()) {
-    return resource_id;
-  }
-  return (path(name_space) / resource_id).generic_u8string();
-}
-
-static bool get_dict_files_from_settings(vector<path>* dict_files,
-                                         DictSettings& settings,
-                                         ResourceResolver* source_resolver,
-                                         const string& name_space) {
+static bool get_dict_files_from_settings(
+    vector<path>* dict_files,
+    DictSettings& settings,
+    ResourceResolver* source_resolver,
+    const string& name_space,
+    bool allow_default_namespace_fallback) {
   if (auto tables = settings.GetTables()) {
     for (auto it = tables->begin(); it != tables->end(); ++it) {
       string dict_name = As<ConfigValue>(*it)->str();
-      dict_name = qualify_with_namespace(name_space, dict_name);
-      auto dict_file = source_resolver->ResolvePath(dict_name + ".dict.yaml");
-      if (!std::filesystem::exists(dict_file)) {
-        LOG(ERROR) << "source file '" << dict_file << "' does not exist.";
+      vector<string> candidates;
+      if (!name_space.empty() &&
+          !boost::starts_with(dict_name, name_space + "/")) {
+        candidates.push_back((path(name_space) / dict_name).generic_u8string());
+      }
+      candidates.push_back(dict_name);
+      path dict_file;
+      bool found = false;
+      for (size_t i = 0; i < candidates.size(); ++i) {
+        if (i > 0 && !allow_default_namespace_fallback) {
+          break;
+        }
+        auto candidate_file =
+            source_resolver->ResolvePath(candidates[i] + ".dict.yaml");
+        if (std::filesystem::exists(candidate_file)) {
+          dict_file = candidate_file;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        auto preferred =
+            source_resolver->ResolvePath(candidates.front() + ".dict.yaml");
+        auto fallback =
+            source_resolver->ResolvePath(candidates.back() + ".dict.yaml");
+        if (candidates.size() > 1) {
+          LOG(ERROR) << "source files '" << preferred << "' and '" << fallback
+                     << "' do not exist.";
+        } else {
+          LOG(ERROR) << "source file '" << preferred << "' does not exist.";
+        }
         return false;
       }
       dict_files->push_back(dict_file);
@@ -118,7 +140,8 @@ bool DictCompiler::Compile(const path& schema_file) {
   }
   vector<path> dict_files;
   if (!get_dict_files_from_settings(&dict_files, settings,
-                                    source_resolver_.get(), dict_namespace)) {
+                                    source_resolver_.get(), dict_namespace,
+                                    allow_default_namespace_fallback_)) {
     return false;
   }
   uint32_t dict_file_checksum =
@@ -132,7 +155,8 @@ bool DictCompiler::Compile(const path& schema_file) {
       vector<path> default_dict_files;
       if (load_dict_settings_from_file(&default_settings, default_dict_file) &&
           get_dict_files_from_settings(&default_dict_files, default_settings,
-                                       source_resolver_.get(), string())) {
+                                       source_resolver_.get(), string(),
+                                       true)) {
         uint32_t default_checksum =
             compute_dict_file_checksum(0, default_dict_files, default_settings);
         if (default_checksum == dict_file_checksum &&
@@ -230,7 +254,8 @@ bool DictCompiler::Compile(const path& schema_file) {
     }
     vector<path> dict_files;
     if (!get_dict_files_from_settings(&dict_files, settings,
-                                      source_resolver_.get(), dict_namespace)) {
+                                      source_resolver_.get(), dict_namespace,
+                                      allow_default_namespace_fallback_)) {
       continue;
     }
     uint32_t pack_file_checksum =

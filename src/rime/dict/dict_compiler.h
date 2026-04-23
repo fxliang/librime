@@ -36,6 +36,9 @@ class DictCompiler {
 
   RIME_DLL bool Compile(const path& schema_file);
   void set_options(int options) { options_ = options; }
+  void set_allow_default_namespace_fallback(bool allow_fallback) {
+    allow_default_namespace_fallback_ = allow_fallback;
+  }
 
  private:
   bool BuildTable(int table_index,
@@ -57,6 +60,7 @@ class DictCompiler {
   an<EditDistanceCorrector> correction_;
   vector<of<Table>> tables_;
   int options_ = 0;
+  bool allow_default_namespace_fallback_ = true;
   the<ResourceResolver> source_resolver_;
   the<ResourceResolver> target_resolver_;
 };

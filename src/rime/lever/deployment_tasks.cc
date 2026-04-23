@@ -490,6 +490,8 @@ bool SchemaUpdate::Run(Deployer* deployer) {
   }
   // reload compiled config
   config.reset(Config::Require("schema")->Create(effective_schema_id));
+  bool namespace_resources_only = false;
+  config->GetBool("schema/namespace_resources_only", &namespace_resources_only);
   QualifyDictionarySettings(name_space, config.get());
   string dict_name;
   if (!config->GetString("translator/dictionary", &dict_name)) {
@@ -510,6 +512,7 @@ bool SchemaUpdate::Run(Deployer* deployer) {
     return false;
   }
   DictCompiler dict_compiler(dict.get());
+  dict_compiler.set_allow_default_namespace_fallback(!namespace_resources_only);
   if (verbose_) {
     dict_compiler.set_options(DictCompiler::kRebuild | DictCompiler::kDump);
   }

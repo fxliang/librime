@@ -7,8 +7,11 @@
 //
 #include <cfloat>
 #include <cstdlib>
+#include <algorithm>
+#include <filesystem>
 #include <sstream>
 #include <boost/algorithm/string.hpp>
+#include <rime/config.h>
 #include <rime/resource.h>
 #include <rime/schema.h>
 #include <rime/service.h>
@@ -234,6 +237,97 @@ an<DictSettings> ReverseLookupDictionary::GetDictSettings() {
 static const ResourceType kReverseDbResourceType = {"reverse_db", "",
                                                     ".reverse.bin"};
 
+namespace {
+
+bool IsRelativePathUnderRoot(const path& full_path, const path& root_path) {
+  if (full_path.empty() || root_path.empty()) {
+    return false;
+  }
+  const auto rel = std::filesystem::absolute(full_path).lexically_relative(
+      std::filesystem::absolute(root_path));
+  if (rel.empty()) {
+    return false;
+  }
+  const auto rel_text = rel.generic_u8string();
+  return rel_text != ".." && rel_text.rfind("../", 0) != 0;
+}
+
+path SchemaNamespacePath(const Ticket& ticket, Config* config) {
+  auto schema_namespace = path(ticket.schema->schema_id()).parent_path();
+  if (!schema_namespace.empty()) {
+    return schema_namespace;
+  }
+  if (!config) {
+    return path();
+  }
+  const auto& config_path = config->file_path();
+  auto parent_path = config_path.parent_path();
+  if (parent_path.empty()) {
+    return path();
+  }
+  auto& deployer = Service::instance().deployer();
+  const vector<path> roots = {deployer.staging_dir, deployer.prebuilt_data_dir,
+                              deployer.user_data_dir, deployer.shared_data_dir};
+  for (const auto& root : roots) {
+    if (!IsRelativePathUnderRoot(config_path, root)) {
+      continue;
+    }
+    auto relative_parent =
+        std::filesystem::absolute(parent_path)
+            .lexically_relative(std::filesystem::absolute(root));
+    if (!relative_parent.empty()) {
+      auto relative_parent_text = relative_parent.generic_u8string();
+      if (relative_parent_text != ".." &&
+          relative_parent_text.rfind("../", 0) != 0) {
+        return relative_parent;
+      }
+    }
+  }
+  return path();
+}
+
+string ResolveDictNameWithNamespaceFallback(ResourceResolver* resolver,
+                                            const string& dict_name) {
+  if (!resolver || dict_name.empty()) {
+    return dict_name;
+  }
+  if (std::filesystem::exists(resolver->ResolvePath(dict_name))) {
+    return dict_name;
+  }
+  auto dict_path = path(dict_name);
+  if (dict_path.is_absolute()) {
+    return dict_name;
+  }
+
+  vector<path> namespace_dirs;
+  auto root_path = resolver->root_path();
+  if (!root_path.empty()) {
+    for (const auto& entry : std::filesystem::directory_iterator(root_path)) {
+      if (entry.is_directory()) {
+        namespace_dirs.push_back(entry.path().filename());
+      }
+    }
+    std::sort(namespace_dirs.begin(), namespace_dirs.end());
+  }
+
+  for (const auto& ns : namespace_dirs) {
+    auto prefixed = (ns / dict_path).generic_u8string();
+    if (std::filesystem::exists(resolver->ResolvePath(prefixed))) {
+      return prefixed;
+    }
+    if (dict_path.has_parent_path()) {
+      auto inserted = (dict_path.parent_path() / ns / dict_path.filename())
+                          .generic_u8string();
+      if (std::filesystem::exists(resolver->ResolvePath(inserted))) {
+        return inserted;
+      }
+    }
+  }
+  return dict_name;
+}
+
+}  // namespace
+
 ReverseLookupDictionaryComponent::ReverseLookupDictionaryComponent()
     : DbPool(the<ResourceResolver>(
           Service::instance().CreateDeployedResourceResolver(
@@ -241,7 +335,8 @@ ReverseLookupDictionaryComponent::ReverseLookupDictionaryComponent()
 
 ReverseLookupDictionary* ReverseLookupDictionaryComponent::Create(
     const string& dict_name) {
-  auto db = GetDb(dict_name);
+  auto db = GetDb(ResolveDictNameWithNamespaceFallback(resource_resolver_.get(),
+                                                       dict_name));
   return new ReverseLookupDictionary(db);
 };
 
@@ -254,6 +349,19 @@ ReverseLookupDictionary* ReverseLookupDictionaryComponent::Create(
   if (!config->GetString(ticket.name_space + "/dictionary", &dict_name)) {
     // missing!
     return NULL;
+  }
+  auto schema_namespace = SchemaNamespacePath(ticket, config);
+  if (!schema_namespace.empty() && !path(dict_name).has_parent_path()) {
+    auto namespaced_dict_name =
+        (schema_namespace / dict_name).generic_u8string();
+    bool namespace_resources_only = false;
+    config->GetBool("schema/namespace_resources_only",
+                    &namespace_resources_only);
+    if (namespace_resources_only ||
+        std::filesystem::exists(
+            resource_resolver_->ResolvePath(namespaced_dict_name))) {
+      dict_name = std::move(namespaced_dict_name);
+    }
   }
   return Create(dict_name);
 }

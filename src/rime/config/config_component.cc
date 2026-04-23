@@ -43,6 +43,10 @@ bool Config::SaveToFile(const path& file_path) {
   return data_->SaveToFile(file_path);
 }
 
+const path& Config::file_path() const {
+  return data_->file_path();
+}
+
 bool Config::IsNull(const string& path) {
   auto p = data_->Traverse(path);
   return !p || p->type() == ConfigItem::kNull;

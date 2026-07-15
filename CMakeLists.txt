@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.12)
 project(rime)
 set(CMAKE_CXX_STANDARD 17)
 
-set(rime_version 1.16.1)
+set(rime_version 1.17.0)
 set(rime_soversion 1)
 
 # generate compile_commands.json
@@ -264,7 +264,7 @@ message(STATUS "rime_plugins_libs: ${rime_plugins_deps}")
 message(STATUS "rime_plugins_modules: ${rime_plugins_modules}")
 set(list "")
 foreach(mod ${rime_plugins_modules})
-  set(list "${list},Q(${mod})")
+  string(APPEND list "(${mod})")
 endforeach()
 set(RIME_SETUP_EXTRA_MODULES "${list}")
 if(BUILD_SHARED_LIBS AND BUILD_SEPARATE_LIBS AND rime_plugins_objs)

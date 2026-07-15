@@ -53,7 +53,6 @@ set(rime_dict_deps
     ${LevelDb_LIBRARY}
     ${Marisa_LIBRARY})
 set(rime_gears_deps
-    ${ICONV_LIBRARIES}
     ${ICU_LIBRARIES}
     ${Opencc_LIBRARY})
 set(rime_levers_deps "")
@@ -182,7 +181,6 @@ foreach(rime_version_source IN LISTS rime_version_sources)
     APPEND PROPERTY COMPILE_DEFINITIONS RIME_VERSION=\"${rime_version}\")
 endforeach()
 if(DEFINED RIME_SETUP_EXTRA_MODULES)
-  set_property(SOURCE rime/setup.cc
-    PROPERTY COMPILE_DEFINITIONS
+  target_compile_definitions(${rime_library} PRIVATE
     "RIME_EXTRA_MODULES=${RIME_SETUP_EXTRA_MODULES}")
 endif()

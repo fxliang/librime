@@ -7,11 +7,7 @@
 
 #include <rime/build_config.h>
 
-#ifdef RIME_ENABLE_LOGGING
-#include <glog/logging.h>
-#else
-#include "no_logging.h"
-#endif  // RIME_ENABLE_LOGGING
+#include "logging.h"
 
 #include <rime_api.h>
 #include <rime/deployer.h>
